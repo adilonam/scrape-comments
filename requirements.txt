@@ -1,2 +1,9 @@
 selenium
 webdriver-manager
+protobuf
+transformers
+numpy
+scipy
+tiktoken
+sentencepiece
+ipywidgets
