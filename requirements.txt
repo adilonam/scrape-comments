@@ -8,3 +8,6 @@ tiktoken
 sentencepiece
 ipywidgets
 sacremoses
+fastapi
+uvicorn
+pydantic

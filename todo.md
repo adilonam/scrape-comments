@@ -1,0 +1,2 @@
+- [x] api for scrape comments
+- [ ] integratge fast with front
