@@ -11,10 +11,49 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import time
-from typing import List
+from typing import List, Dict
 import uvicorn
 
+# Import sentiment analysis libraries
+import torch
+import numpy as np
+from scipy.special import softmax
+from transformers import AutoModelForSequenceClassification, AutoTokenizer, AutoConfig
+
 app = FastAPI(title="Comments Scraper API")
+
+@app.on_event("startup")
+async def startup_event():
+    print("Loading sentiment analysis model...")
+    load_model()
+    
+
+# Initialize sentiment analysis model
+MODEL_PATH = "cardiffnlp/twitter-xlm-roberta-base-sentiment"
+tokenizer = None
+model = None
+config = None
+
+def load_model():
+    global tokenizer, model, config
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
+        config = AutoConfig.from_pretrained(MODEL_PATH)
+        model = AutoModelForSequenceClassification.from_pretrained(MODEL_PATH)
+        print("Model loaded successfully!")
+        return True
+    except Exception as e:
+        print(f"Error loading model: {e}")
+        return False
+
+# Preprocess text (username and link placeholders)
+def preprocess(text):
+    new_text = []
+    for t in text.split(" "):
+        t = '@user' if t.startswith('@') and len(t) > 1 else t
+        t = 'http' if t.startswith('http') else t
+        new_text.append(t)
+    return " ".join(new_text)
 
 class UrlInput(BaseModel):
     url: str
@@ -22,6 +61,14 @@ class UrlInput(BaseModel):
 class CommentResponse(BaseModel):
     comments: List[str]
     total_comments: int
+    
+class CommentInput(BaseModel):
+    comment: str
+    
+class SentimentResult(BaseModel):
+    results: List[Dict[str, float|str]]
+    sentiment: str
+    execution_time: float
 
 def setup_driver():
     # Set up Tor proxy
@@ -77,6 +124,52 @@ async def scrape_comments(url_input: UrlInput):
             # Always close the browser
             driver.quit()
             
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/comment-classification")
+async def classify_comment(comment_input: CommentInput):
+    try:
+        # Load model if not already loaded
+        if model is None:
+            success = load_model()
+            if not success:
+                raise HTTPException(status_code=500, detail="Failed to load sentiment model")
+        
+        start_time = time.time()
+        
+        # Preprocess and analyze text
+        text = preprocess(comment_input.comment)
+        encoded_input = tokenizer(text, return_tensors='pt')
+        output = model(**encoded_input)
+        scores = output[0][0].detach().numpy()
+        scores = softmax(scores)
+        
+        # Get ordered results
+        ranking = np.argsort(scores)
+        ranking = ranking[::-1]
+        
+        # Format results
+        results = []
+        dominant_sentiment = config.id2label[ranking[0]]
+        
+        for i in range(scores.shape[0]):
+            label = config.id2label[ranking[i]]
+            score = float(scores[ranking[i]])
+            results.append({
+                "rank": i+1, 
+                "label": label, 
+                "score": round(score, 4)
+            })
+        end_time = time.time()
+        execution_time = round(end_time - start_time, 4)
+        
+        return SentimentResult(
+            results=results,
+            sentiment=dominant_sentiment,
+            execution_time=execution_time
+        )
+    
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

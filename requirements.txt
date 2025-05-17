@@ -6,6 +6,7 @@ numpy
 scipy
 tiktoken
 sentencepiece
+torch
 ipywidgets
 sacremoses
 fastapi
