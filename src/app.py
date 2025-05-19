@@ -18,9 +18,8 @@ import requests # Add import for requests
 
 # Import sentiment analysis libraries
 import torch
-import numpy as np
-from scipy.special import softmax
-from transformers import AutoModelForSequenceClassification, AutoTokenizer, AutoConfig
+import torch.nn.functional as F # Added
+from transformers import AutoModelForSequenceClassification, AutoTokenizer # AutoConfig removed
 
 def check_tor_status():
     """Checks if Tor is working by making a request to the official Tor check website."""
@@ -60,17 +59,17 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Comments Scraper API", lifespan=lifespan)
 
 # Initialize sentiment analysis model
-MODEL_PATH = "cardiffnlp/twitter-xlm-roberta-base-sentiment"
+MODEL_PATH = "tabularisai/multilingual-sentiment-analysis" # Changed MODEL_PATH
 tokenizer = None
 model = None
-config = None
+# config = None # Removed config global
 
 def load_model():
-    global tokenizer, model, config
+    global tokenizer, model # Removed config from globals
     try:
-        tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
-        config = AutoConfig.from_pretrained(MODEL_PATH)
-        model = AutoModelForSequenceClassification.from_pretrained(MODEL_PATH)
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, cache_dir=".")
+        # config = AutoConfig.from_pretrained(MODEL_PATH) # Removed config loading
+        model = AutoModelForSequenceClassification.from_pretrained(MODEL_PATH, cache_dir=".")
         print("Model loaded successfully!")
         return True
     except Exception as e:
@@ -162,41 +161,65 @@ async def scrape_comments(url_input: UrlInput):
 async def classify_comment(comment_input: CommentInput):
     try:
         # Load model if not already loaded
-        if model is None:
+        if model is None or tokenizer is None: # Ensure tokenizer is also loaded
             success = load_model()
             if not success:
                 raise HTTPException(status_code=500, detail="Failed to load sentiment model")
         
         start_time = time.time()
         
-        # Preprocess and analyze text
+        # Preprocess text
         text = preprocess(comment_input.comment)
-        encoded_input = tokenizer(text, return_tensors='pt')
-        output = model(**encoded_input)
-        scores = output[0][0].detach().numpy()
-        scores = softmax(scores)
         
-        # Get ordered results
-        ranking = np.argsort(scores)
-        ranking = ranking[::-1]
+        # Tokenize input
+        # Adding truncation and padding for robustness, common practice for transformers
+        encoded_input = tokenizer(text, return_tensors='pt', truncation=True, padding=True)
+        
+        # Get model output
+        with torch.no_grad(): # Ensure gradients are not computed
+            outputs = model(**encoded_input)
+            logits = outputs.logits
+        
+        # Convert logits to probabilities
+        probs = F.softmax(logits, dim=-1).squeeze()
+        
+        # Define class labels for the new model
+        labels = [
+            "Very Negative",
+            "Negative",
+            "Neutral",
+            "Positive",
+            "Very Positive"
+        ]
         
         # Format results
-        results = []
-        dominant_sentiment = config.id2label[ranking[0]]
-        
-        for i in range(scores.shape[0]):
-            label = config.id2label[ranking[i]]
-            score = float(scores[ranking[i]])
-            results.append({
-                "rank": i+1, 
-                "label": label, 
+        results_with_scores = []
+        for i, label_name in enumerate(labels):
+            score = probs[i].item() # Get probability for each label
+            results_with_scores.append({
+                "label": label_name,
                 "score": round(score, 4)
             })
+        
+        # Sort by score to determine rank and dominant sentiment
+        # Sort in descending order of score
+        ranked_results = sorted(results_with_scores, key=lambda x: x["score"], reverse=True)
+        
+        final_results = []
+        for i, item in enumerate(ranked_results):
+            final_results.append({
+                "rank": i + 1,
+                "label": item["label"],
+                "score": item["score"]
+            })
+            
+        dominant_sentiment = ranked_results[0]["label"] if ranked_results else "N/A"
+        
         end_time = time.time()
         execution_time = round(end_time - start_time, 4)
         
         return SentimentResult(
-            results=results,
+            results=final_results,
             sentiment=dominant_sentiment,
             execution_time=execution_time
         )
