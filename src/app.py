@@ -13,6 +13,8 @@ from selenium.webdriver.support import expected_conditions as EC
 import time
 from typing import List, Dict
 import uvicorn
+from contextlib import asynccontextmanager
+import requests # Add import for requests
 
 # Import sentiment analysis libraries
 import torch
@@ -20,13 +22,42 @@ import numpy as np
 from scipy.special import softmax
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, AutoConfig
 
-app = FastAPI(title="Comments Scraper API")
+def check_tor_status():
+    """Checks if Tor is working by making a request to the official Tor check website."""
+    tor_proxy = "socks5://127.0.0.1:9050"
+    proxies = {
+        "http": tor_proxy,
+        "https": tor_proxy,
+    }
+    try:
+        response = requests.get("https://check.torproject.org", proxies=proxies, timeout=10)
+        if "Congratulations. This browser is configured to use Tor." in response.text:
+            print("Tor is working.")
+            return True
+        else:
+            print("Tor is not working. Response did not contain success message.")
+            return False
+    except requests.exceptions.RequestException as e:
+        print(f"Tor is not working: {e}")
+        return False
 
-@app.on_event("startup")
-async def startup_event():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Load the ML model
     print("Loading sentiment analysis model...")
     load_model()
-    
+    # Check Tor status
+    print("Checking Tor status...")
+    if not check_tor_status():
+        # Optionally, you might want to raise an error or prevent app startup
+        # For now, just printing a message.
+        print("Warning: Tor is not operational. Scraping functionality might be affected.")
+    yield
+    # Clean up the ML models and release the resources
+    # (if necessary, though for this model it might not be strictly needed
+    # as it's loaded once and used throughout the app's lifecycle)
+
+app = FastAPI(title="Comments Scraper API", lifespan=lifespan)
 
 # Initialize sentiment analysis model
 MODEL_PATH = "cardiffnlp/twitter-xlm-roberta-base-sentiment"
